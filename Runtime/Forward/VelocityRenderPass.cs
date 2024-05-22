@@ -1,4 +1,4 @@
-﻿using System.Collections.Generic;
+using System.Collections.Generic;
 using Aarthificial.PixelGraphics.Common;
 using UnityEngine;
 using UnityEngine.Experimental.Rendering;
@@ -11,8 +11,8 @@ namespace Aarthificial.PixelGraphics.Forward
     {
         private readonly List<ShaderTagId> _shaderTagIdList = new List<ShaderTagId>();
         private readonly ProfilingSampler _profilingSampler;
-        private readonly RenderTargetHandle _temporaryVelocityTarget;
-        private readonly RenderTargetHandle _velocityTarget;
+        private RTHandle _temporaryVelocityTarget;
+        private RTHandle _velocityTarget;
         private readonly Material _emitterMaterial;
         private readonly Material _blitMaterial;
 
@@ -26,9 +26,6 @@ namespace Aarthificial.PixelGraphics.Forward
             _emitterMaterial = emitterMaterial;
             _blitMaterial = blitMaterial;
 
-            _temporaryVelocityTarget.Init("_PG_TemporaryVelocityTextureTarget");
-            _velocityTarget.Init("_VelocityTarget");
-
             _shaderTagIdList.Add(new ShaderTagId("SRPDefaultUnlit"));
             _shaderTagIdList.Add(new ShaderTagId("UniversalForward"));
             _shaderTagIdList.Add(new ShaderTagId("Universal2D"));
@@ -41,13 +38,34 @@ namespace Aarthificial.PixelGraphics.Forward
             renderPassEvent = RenderPassEvent.BeforeRenderingOpaques;
         }
 
-        public void Setup(
-            VelocityPassSettings passSettings,
-            SimulationSettings simulationSettings
-        )
+        public void Setup(VelocityPassSettings passSettings, SimulationSettings simulationSettings)
         {
             _passSettings = passSettings;
             _simulationSettings = simulationSettings;
+        }
+
+        public override void Configure(CommandBuffer cmd, RenderTextureDescriptor cameraTextureDescriptor)
+        {
+            int textureWidth = Mathf.FloorToInt(cameraTextureDescriptor.width * _passSettings.textureScale);
+            int textureHeight = Mathf.FloorToInt(cameraTextureDescriptor.height * _passSettings.textureScale);
+
+            _temporaryVelocityTarget = RTHandles.Alloc(
+                textureWidth,
+                textureHeight,
+                depthBufferBits: 0,
+                colorFormat: GraphicsFormat.R16G16B16A16_SFloat,
+                filterMode: FilterMode.Bilinear,
+                name: "_PG_TemporaryVelocityTextureTarget"
+            );
+
+            _velocityTarget = RTHandles.Alloc(
+                textureWidth,
+                textureHeight,
+                depthBufferBits: 0,
+                colorFormat: GraphicsFormat.R16G16B16A16_SFloat,
+                filterMode: FilterMode.Bilinear,
+                name: "_VelocityTarget"
+            );
         }
 
         public override void Execute(ScriptableRenderContext context, ref RenderingData renderingData)
@@ -59,37 +77,17 @@ namespace Aarthificial.PixelGraphics.Forward
             {
                 ref var cameraData = ref renderingData.cameraData;
 
-                int textureWidth = Mathf.FloorToInt(cameraData.camera.pixelWidth * _passSettings.textureScale);
-                int textureHeight = Mathf.FloorToInt(cameraData.camera.pixelHeight * _passSettings.textureScale);
-
                 float height = 2 * cameraData.camera.orthographicSize * _passSettings.pixelsPerUnit;
                 float width = height * cameraData.camera.aspect;
 
-                var cameraPosition = (Vector2) cameraData.GetViewMatrix().GetColumn(3);
+                var cameraPosition = (Vector2)cameraData.GetViewMatrix().GetColumn(3);
                 var delta = cameraPosition - _previousPosition;
                 var screenDelta = cameraData.GetProjectionMatrix() * cameraData.GetViewMatrix() * delta;
                 _previousPosition = cameraPosition;
 
-                cmd.GetTemporaryRT(
-                    _temporaryVelocityTarget.id,
-                    textureWidth,
-                    textureHeight,
-                    0,
-                    FilterMode.Bilinear,
-                    GraphicsFormat.R16G16B16A16_SFloat
-                );
-                cmd.GetTemporaryRT(
-                    _velocityTarget.id,
-                    textureWidth,
-                    textureHeight,
-                    0,
-                    FilterMode.Bilinear,
-                    GraphicsFormat.R16G16B16A16_SFloat
-                );
-
                 cmd.SetGlobalVector(ShaderIds.CameraPositionDelta, screenDelta / 2);
-                cmd.SetGlobalTexture(ShaderIds.VelocityTexture, _velocityTarget.id);
-                cmd.SetGlobalTexture(ShaderIds.PreviousVelocityTexture, _temporaryVelocityTarget.id);
+                cmd.SetGlobalTexture(ShaderIds.VelocityTexture, _velocityTarget);
+                cmd.SetGlobalTexture(ShaderIds.PreviousVelocityTexture, _temporaryVelocityTarget);
                 cmd.SetGlobalVector(ShaderIds.VelocitySimulationParams, _simulationSettings.Value);
                 cmd.SetGlobalVector(
                     ShaderIds.PixelScreenParams,
@@ -101,9 +99,9 @@ namespace Aarthificial.PixelGraphics.Forward
                     )
                 );
 
-                CoreUtils.SetRenderTarget(cmd, _velocityTarget.id);
+                CoreUtils.SetRenderTarget(cmd, _velocityTarget);
                 cmd.SetViewProjectionMatrices(Matrix4x4.identity, Matrix4x4.identity);
-                cmd.SetViewport(new Rect(0, 0, textureWidth, textureHeight));
+                cmd.SetViewport(new Rect(0, 0, _velocityTarget.rt.width, _velocityTarget.rt.height));
                 cmd.DrawMesh(RenderingUtils.fullscreenMesh, Matrix4x4.identity, _blitMaterial, 0, 0);
                 cmd.SetViewProjectionMatrices(cameraData.GetViewMatrix(), cameraData.GetProjectionMatrix());
                 context.ExecuteCommandBuffer(cmd);
@@ -135,14 +133,14 @@ namespace Aarthificial.PixelGraphics.Forward
                 }
 
                 // TODO Implement proper double buffering
-                cmd.Blit(_velocityTarget.id, _temporaryVelocityTarget.id);
+                cmd.Blit(_velocityTarget, _temporaryVelocityTarget);
 #if UNITY_EDITOR
                 if (_passSettings.preview)
-                    cmd.Blit(_velocityTarget.id, colorAttachment);
+                    cmd.Blit(_velocityTarget, colorAttachmentHandle);
 #endif
-                CoreUtils.SetRenderTarget(cmd, colorAttachment);
-                cmd.ReleaseTemporaryRT(_temporaryVelocityTarget.id);
-                cmd.ReleaseTemporaryRT(_velocityTarget.id);
+                CoreUtils.SetRenderTarget(cmd, colorAttachmentHandle);
+                RTHandles.Release(_temporaryVelocityTarget);
+                RTHandles.Release(_velocityTarget);
             }
 
             context.ExecuteCommandBuffer(cmd);
