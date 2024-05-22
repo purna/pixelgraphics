@@ -1,4 +1,4 @@
-﻿using Aarthificial.PixelGraphics.Common;
+using Aarthificial.PixelGraphics.Common;
 using UnityEngine;
 using UnityEngine.Rendering;
 using UnityEngine.Rendering.Universal;
@@ -35,7 +35,7 @@ namespace Aarthificial.PixelGraphics.Forward
 
         public override void AddRenderPasses(ScriptableRenderer renderer, ref RenderingData renderingData)
         {
-            _pass.ConfigureTarget(renderer.cameraColorTarget);
+            _pass.ConfigureTarget(renderer.cameraColorTargetHandle);
             _pass.Setup(settings, simulation);
             renderer.EnqueuePass(_pass);
         }
